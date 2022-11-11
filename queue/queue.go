@@ -1,6 +1,8 @@
 package queue
 
 import (
+	"time"
+
 	"github.com/addisoncox/zucchini/config"
 	"github.com/addisoncox/zucchini/redis"
 	"github.com/addisoncox/zucchini/task"
@@ -8,12 +10,14 @@ import (
 )
 
 type Queue struct {
-	name      string
-	tasks     chan task.Task
-	redis     *redis.RedisClient
-	capacity  uint64
-	taskCount uint64
-	callback  func(task.TaskResult)
+	name       string
+	tasks      chan task.Task
+	redis      *redis.RedisClient
+	capacity   uint64
+	taskCount  uint64
+	goroutines uint32
+	workers    uint32
+	callback   func(task.TaskResult)
 }
 
 func (q *Queue) EnqueueTask(task task.Task) {
@@ -33,13 +37,25 @@ func (q *Queue) RunNextTask() {
 		q.redis.LPush(q.name, taskResult)
 	}
 }
+func (q *Queue) processTask(function interface{}, arguments ...interface{}) {
+	taskResult := util.Call(function, arguments...)
+	q.redis.LPush(q.name, taskResult)
+	q.goroutines--
+}
 
 func (q *Queue) ProcessTasks() {
-	for q.taskCount > 0 {
-		nextTask := <-q.tasks
-		taskResult := util.Call(nextTask.Function, nextTask.Arguments...)
-		q.taskCount--
-		q.redis.LPush(q.name, taskResult)
+	for {
+		time.Sleep(time.Second)
+		for q.taskCount > 0 {
+			if q.goroutines < q.workers {
+				nextTask := <-q.tasks
+				q.taskCount--
+				q.goroutines++
+				go q.processTask(nextTask.Function, nextTask.Arguments...)
+			} else {
+				break
+			}
+		}
 	}
 }
 
@@ -70,11 +86,13 @@ func (q *Queue) Listen() {
 
 func NewQueue(cfg config.QueueConfig) Queue {
 	return Queue{
-		name:      cfg.Name,
-		tasks:     make(chan task.Task, cfg.Capacity),
-		redis:     &cfg.Redis,
-		capacity:  cfg.Capacity,
-		taskCount: 0,
-		callback:  nil,
+		name:       cfg.Name,
+		tasks:      make(chan task.Task, cfg.Capacity),
+		redis:      &cfg.Redis,
+		capacity:   cfg.Capacity,
+		taskCount:  0,
+		goroutines: 0,
+		workers:    cfg.Workers,
+		callback:   nil,
 	}
 }

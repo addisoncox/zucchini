@@ -6,4 +6,5 @@ type QueueConfig struct {
 	Name     string
 	Capacity uint64
 	Redis    redis.RedisClient
+	Workers  uint32
 }
