@@ -2,7 +2,6 @@ package redis
 
 import (
 	"context"
-	"fmt"
 	"time"
 
 	"github.com/go-redis/redis/v9"
@@ -35,11 +34,15 @@ func (r *RedisClient) Get(key string) interface{} {
 }
 
 func (r *RedisClient) LPush(key string, value interface{}) {
-	fmt.Println(r.client.LPush(ctx, key, value))
+	r.client.LPush(ctx, key, value)
 }
 
-func (r *RedisClient) RPop(key string) (string, error) {
-	return r.client.RPop(ctx, key).Result()
+func (r *RedisClient) BRPop(key string) (string, error) {
+	values, err := r.client.BRPop(ctx, time.Second, key).Result()
+	if err != nil {
+		return "", err
+	}
+	return values[1], err
 }
 
 func (r *RedisClient) LLen(key string) uint64 {

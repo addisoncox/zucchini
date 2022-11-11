@@ -1,8 +1,6 @@
 package queue
 
 import (
-	"time"
-
 	"github.com/addisoncox/zucchini/config"
 	"github.com/addisoncox/zucchini/redis"
 	"github.com/addisoncox/zucchini/task"
@@ -51,35 +49,32 @@ func (q *Queue) RegisterCallback(callback func(task.TaskResult)) {
 
 func (q *Queue) Listen() {
 	for {
-		time.Sleep(time.Second)
-		//fmt.Println(q.redis.LLen(q.name))
-		for q.redis.LLen(q.name) > 0 {
-			value, err := q.redis.RPop(q.name)
-			if q.callback == nil {
-				return
-			}
-			if err != nil {
-				q.callback(task.TaskResult{
-					Status: task.Failed,
-					Value:  "",
-				})
-			} else {
-				q.callback(task.TaskResult{
-					Status: task.Succeeded,
-					Value:  value,
-				})
-			}
+
+		value, err := q.redis.BRPop(q.name)
+		if q.callback == nil {
+			return
+		}
+		if err != nil {
+			q.callback(task.TaskResult{
+				Status: task.Failed,
+				Value:  "",
+			})
+		} else {
+			q.callback(task.TaskResult{
+				Status: task.Succeeded,
+				Value:  value,
+			})
 		}
 	}
 }
 
 func NewQueue(cfg config.QueueConfig) Queue {
 	return Queue{
-		cfg.Name,
-		make(chan task.Task, cfg.Capacity),
-		&cfg.Redis,
-		cfg.Capacity,
-		0,
-		nil,
+		name:      cfg.Name,
+		tasks:     make(chan task.Task, cfg.Capacity),
+		redis:     &cfg.Redis,
+		capacity:  cfg.Capacity,
+		taskCount: 0,
+		callback:  nil,
 	}
 }

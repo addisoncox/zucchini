@@ -10,8 +10,8 @@ const (
 )
 
 type TaskResult struct {
-	Status TaskStatus
-	Value  string
+	Status TaskStatus `json:"-"`
+	Value  string     `json:"value"`
 }
 
 type Task struct {
@@ -20,5 +20,9 @@ type Task struct {
 }
 
 func (t TaskResult) MarshalBinary() ([]byte, error) {
-	return json.Marshal(t)
+	return json.Marshal(t.Value)
+}
+
+func (t TaskResult) UnmarshalBinary(b []byte) error {
+	return json.Unmarshal(b, &t.Value)
 }

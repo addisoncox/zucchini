@@ -20,7 +20,7 @@ func add(x int, y int) int {
 func main() {
 
 	queueConfig := config.QueueConfig{
-		Name:     "test",
+		Name:     "tbest",
 		Capacity: 100,
 		Redis:    *redis.NewClient("localhost:6379", "", 0),
 	}
@@ -39,6 +39,7 @@ func main() {
 	queue.RegisterCallback(func(result task.TaskResult) {
 		if result.Status == task.Succeeded {
 			fmt.Println("Task worked!")
+			fmt.Println(result)
 			fmt.Println(result.Value)
 		}
 	})

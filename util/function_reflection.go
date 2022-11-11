@@ -56,7 +56,6 @@ func Call(function interface{}, arguments ...interface{}) task.TaskResult {
 			Value:  "",
 		}
 	}
-
 	return task.TaskResult{
 		Status: task.Succeeded,
 		Value:  fmt.Sprintf("%v", functionResult[0].Interface()),
