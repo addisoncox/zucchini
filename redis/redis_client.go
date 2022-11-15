@@ -16,19 +16,19 @@ var ctx = context.Background()
 func NewClient(addr string, password string, db int) *RedisClient {
 	return &RedisClient{client: redis.NewClient(&redis.Options{
 		Addr:     addr,
-		Password: password, // no password set
-		DB:       db,       // use default DB
+		Password: password,
+		DB:       db,
 	})}
 }
 
 func (r *RedisClient) Set(key string, value interface{}) {
-	r.client.Set(ctx, key, value, time.Hour)
+	r.client.Set(ctx, key, value, 0)
 }
 
 func (r *RedisClient) Get(key string) interface{} {
 	res, err := r.client.Do(ctx, "get", key).Result()
 	if err != nil {
-		panic("Redis get on " + key + " failed")
+		panic(err.Error())
 	}
 	return res
 }

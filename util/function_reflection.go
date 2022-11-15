@@ -36,6 +36,11 @@ func functionArgumentsMatchSignature(function interface{}, args ...interface{}) 
 }
 
 func Call(function interface{}, arguments ...interface{}) task.TaskResult {
+	functionType := reflect.TypeOf(function)
+
+	if functionType.Kind() != reflect.Func {
+		panic("Attempted to call non function")
+	}
 
 	if !functionArgumentsMatchSignature(function, arguments...) {
 		panic("Function arguments did not match signature")
@@ -52,12 +57,12 @@ func Call(function interface{}, arguments ...interface{}) task.TaskResult {
 	functionResult := functionValue.Call(argsIn)
 	if functionResult == nil {
 		return task.TaskResult{
-			Status: task.Succeeded,
+			Status: task.TaskSucceeded,
 			Value:  "",
 		}
 	}
 	return task.TaskResult{
-		Status: task.Succeeded,
+		Status: task.TaskSucceeded,
 		Value:  fmt.Sprintf("%v", functionResult[0].Interface()),
 	}
 }

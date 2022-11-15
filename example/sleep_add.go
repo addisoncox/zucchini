@@ -10,37 +10,27 @@ import (
 	"github.com/addisoncox/zucchini/task"
 )
 
-func printHello() {
-	fmt.Println("Hello")
-}
-
 func sleepAdd(x int, y int) int {
 	time.Sleep(time.Second * 10)
 	return x + y
 }
 
 func main() {
-
 	queueConfig := config.QueueConfig{
-		Name:     "test",
-		Capacity: 100,
-		Redis:    *redis.NewClient("localhost:6379", "", 0),
-		Workers:  32,
+		Name:           "test",
+		Capacity:       100,
+		Redis:          *redis.NewClient("localhost:6379", "", 0),
+		GoroutineLimit: 32,
 	}
 	queue := queue.NewQueue(queueConfig)
 
-	sayHello := task.Task{Function: printHello}
-
-	queue.EnqueueTask(sayHello)
-	queue.RunNextTask()
-
-	for i := 0; i < 3; i++ {
-		addTask := task.Task{Function: sleepAdd, Arguments: []interface{}{i, 3}}
+	for i := 0; i < 10; i++ {
+		addTask := task.Task{Function: sleepAdd, Arguments: []interface{}{i, 1}}
 		queue.EnqueueTask(addTask)
 	}
 
 	queue.RegisterCallback(func(result task.TaskResult) {
-		if result.Status == task.Succeeded {
+		if result.Succeeded() {
 			fmt.Println("Task worked!")
 			fmt.Println(result.Value)
 		}

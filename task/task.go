@@ -5,8 +5,8 @@ import "encoding/json"
 type TaskStatus int
 
 const (
-	Failed TaskStatus = iota
-	Succeeded
+	TaskFailed TaskStatus = iota
+	TaskSucceeded
 )
 
 type TaskResult struct {
@@ -25,4 +25,8 @@ func (t TaskResult) MarshalBinary() ([]byte, error) {
 
 func (t TaskResult) UnmarshalBinary(b []byte) error {
 	return json.Unmarshal(b, &t.Value)
+}
+
+func (t TaskResult) Succeeded() bool {
+	return t.Status == TaskSucceeded
 }
