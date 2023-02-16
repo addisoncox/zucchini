@@ -1,12 +1,16 @@
 package task
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 type TaskStatus int
 
 const (
-	TaskFailed TaskStatus = iota
-	TaskSucceeded
+	Failed TaskStatus = iota
+	Succeeded
+	Timeout
 )
 
 type TaskResult struct {
@@ -17,6 +21,7 @@ type TaskResult struct {
 type Task struct {
 	Function  interface{}
 	Arguments []interface{}
+	Timeout   time.Duration
 }
 
 func (t TaskResult) MarshalBinary() ([]byte, error) {
@@ -28,5 +33,5 @@ func (t TaskResult) UnmarshalBinary(b []byte) error {
 }
 
 func (t TaskResult) Succeeded() bool {
-	return t.Status == TaskSucceeded
+	return t.Status == Succeeded
 }

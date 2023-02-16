@@ -57,12 +57,12 @@ func Call(function interface{}, arguments ...interface{}) task.TaskResult {
 	functionResult := functionValue.Call(argsIn)
 	if functionResult == nil {
 		return task.TaskResult{
-			Status: task.TaskSucceeded,
+			Status: task.Succeeded,
 			Value:  "",
 		}
 	}
 	return task.TaskResult{
-		Status: task.TaskSucceeded,
+		Status: task.Succeeded,
 		Value:  fmt.Sprintf("%v", functionResult[0].Interface()),
 	}
 }

@@ -37,12 +37,34 @@ func (q *Queue) RunNextTask() {
 		q.redis.LPush(q.name, taskResult)
 	}
 }
-func (q *Queue) processTask(function interface{}, arguments ...interface{}) {
-	taskResult := util.Call(function, arguments...)
-	q.redis.LPush(q.name, taskResult)
-	util.AtomicDec(&q.goroutinesRunning)
+
+func (q *Queue) processTask(function interface{}, timeout time.Duration, arguments ...interface{}) {
+	result := make(chan task.TaskResult, 1)
+	go func() {
+		result <- util.Call(function, arguments...)
+	}()
+
+	select {
+	case taskResult := <-result:
+		q.redis.LPush(q.name, taskResult)
+		util.AtomicDec(&q.goroutinesRunning)
+	case <-time.After(timeout):
+		taskResult := task.TaskResult{
+			Status: task.Timeout,
+			Value:  "",
+		}
+		q.redis.LPush(q.name, taskResult)
+		util.AtomicDec(&q.goroutinesRunning)
+	}
 }
 
+/*
+	func (q *Queue) processTask(function interface{}, arguments ...interface{}) {
+		taskResult := util.Call(function, arguments...)
+		q.redis.LPush(q.name, taskResult)
+		util.AtomicDec(&q.goroutinesRunning)
+	}
+*/
 func (q *Queue) ProcessTasks() {
 	for {
 		time.Sleep(time.Second)
@@ -51,7 +73,7 @@ func (q *Queue) ProcessTasks() {
 				nextTask := <-q.tasks
 				q.taskCount--
 				q.goroutinesRunning++
-				go q.processTask(nextTask.Function, nextTask.Arguments...)
+				go q.processTask(nextTask.Function, nextTask.Timeout, nextTask.Arguments...)
 			} else {
 				break
 			}
@@ -72,12 +94,12 @@ func (q *Queue) Listen() {
 		}
 		if err != nil {
 			q.callback(task.TaskResult{
-				Status: task.TaskFailed,
+				Status: task.Failed,
 				Value:  "",
 			})
 		} else {
 			q.callback(task.TaskResult{
-				Status: task.TaskSucceeded,
+				Status: task.Succeeded,
 				Value:  value,
 			})
 		}
