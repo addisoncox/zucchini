@@ -1,6 +1,8 @@
 package queue
 
 import (
+	"math"
+	"math/rand"
 	"time"
 
 	"github.com/addisoncox/zucchini/config"
@@ -15,22 +17,27 @@ type Task struct {
 }
 
 type Queue struct {
-	name              string
-	tasks             chan Task
-	redis             *redis.RedisClient
-	capacity          uint64
-	taskCount         uint64
-	goroutinesRunning uint64
-	goroutineLimit    uint64
-	callback          func(task.TaskResult)
-	taskIDCounter     uint64
-	taskRetryCounter  map[uint64]uint
-	retryLimit        uint
+	name                string
+	tasks               chan Task
+	redis               *redis.RedisClient
+	capacity            uint64
+	taskCount           uint64
+	goroutinesRunning   uint64
+	goroutineLimit      uint64
+	callback            func(task.TaskResult)
+	retryStrategy       config.RetryStrategy
+	delay               time.Duration
+	baseJitter          time.Duration
+	taskIDCounter       uint64
+	taskRetryCounter    map[uint64]uint
+	retryLimit          uint
+	customRetryFunction func(uint) time.Duration
 }
 
 func (q *Queue) EnqueueTask(task task.Task) {
 	if q.taskCount < q.capacity {
 		q.taskIDCounter++
+		q.taskRetryCounter[q.taskIDCounter] = 0
 		q.tasks <- Task{
 			task: task,
 			id:   q.taskIDCounter,
@@ -53,8 +60,19 @@ func (q *Queue) RunNextTask() {
 	}
 }
 
-func (q *Queue) handleTimeout() {
-	// TODO
+func (q *Queue) handleTimeout(retryCount uint) {
+	if q.retryStrategy == config.ExponentialBackoff {
+		backoffTime := q.delay * time.Duration(math.Pow(2, float64(retryCount)))
+		rand.Seed(time.Now().UnixNano())
+		jitter := q.baseJitter * time.Duration(rand.Float64()*2)
+		time.Sleep(backoffTime + jitter)
+	} else if q.retryStrategy == config.SetDelay {
+		rand.Seed(time.Now().UnixNano())
+		jitter := q.baseJitter * time.Duration(rand.Float64()*2)
+		time.Sleep(q.delay + jitter)
+	} else if q.retryStrategy == config.Custom {
+		time.Sleep(q.customRetryFunction(retryCount))
+	}
 }
 
 func (q *Queue) processTask(
@@ -86,7 +104,8 @@ func (q *Queue) processTask(
 				Status: task.Timeout,
 				Value:  "",
 			}
-			q.handleTimeout()
+			q.taskRetryCounter[taskID]++
+			q.handleTimeout(q.taskRetryCounter[taskID])
 			q.processTask(function, timeout, taskID, arguments...)
 		}
 		q.redis.LPush(q.name, taskResult)
@@ -148,16 +167,20 @@ func (q *Queue) Listen() {
 
 func NewQueue(cfg config.QueueConfig) Queue {
 	return Queue{
-		name:              cfg.Name,
-		tasks:             make(chan Task, cfg.Capacity),
-		redis:             &cfg.Redis,
-		capacity:          cfg.Capacity,
-		taskCount:         0,
-		goroutinesRunning: 0,
-		goroutineLimit:    cfg.GoroutineLimit,
-		callback:          nil,
-		taskIDCounter:     0,
-		taskRetryCounter:  make(map[uint64]uint),
-		retryLimit:        cfg.RetryLimit,
+		name:                cfg.Name,
+		tasks:               make(chan Task, cfg.Capacity),
+		redis:               &cfg.Redis,
+		capacity:            cfg.Capacity,
+		taskCount:           0,
+		goroutinesRunning:   0,
+		goroutineLimit:      cfg.GoroutineLimit,
+		callback:            nil,
+		retryStrategy:       cfg.RetryStrategy,
+		delay:               cfg.Delay,
+		baseJitter:          cfg.BaseJitter,
+		taskIDCounter:       0,
+		taskRetryCounter:    make(map[uint64]uint),
+		retryLimit:          cfg.RetryLimit,
+		customRetryFunction: cfg.CustomRetryFunction,
 	}
 }

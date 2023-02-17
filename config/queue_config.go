@@ -10,7 +10,7 @@ type RetryStrategy uint
 
 const (
 	ExponentialBackoff RetryStrategy = iota
-	ExponentialBackoffWithJitter
+	SetDelay
 	Custom
 )
 
@@ -21,6 +21,8 @@ type QueueConfig struct {
 	GoroutineLimit uint64
 	RetryStrategy  RetryStrategy
 	RetryLimit     uint
+	BaseJitter     time.Duration
+	Delay          time.Duration
 	// given nth retry, return how much time to wait
 	CustomRetryFunction func(uint) time.Duration
 }
