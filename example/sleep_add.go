@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -10,32 +11,45 @@ import (
 	"github.com/addisoncox/zucchini/task"
 )
 
-func sleepAdd(x int, y int) int {
-	time.Sleep(time.Second * 10)
-	return x + y
+type Numbers struct {
+	X int
+	Y int
+}
+
+func sleepAdd(data []byte) interface{} {
+	var numbers Numbers
+	json.Unmarshal(data, &numbers)
+	time.Sleep(time.Second * 3)
+	return numbers.X + numbers.Y
 }
 
 func main() {
+	testTask := task.Task{
+		Name:    "test",
+		Data:    Numbers{X: 3, Y: 4},
+		Timeout: time.Second * 5,
+	}
 	queueConfig := config.QueueConfig{
-		Name:           "test",
-		Capacity:       100,
+		Name:           "TestQueue",
+		Capacity:       10,
 		Redis:          *redis.NewClient("localhost:6379", "", 0),
 		GoroutineLimit: 32,
 	}
-	queue := queue.NewQueue(queueConfig)
+	testQueue := queue.NewQueue(queueConfig)
 
-	for i := 0; i < 10; i++ {
-		addTask := task.Task{Function: sleepAdd, Arguments: []interface{}{i, 1}}
-		queue.EnqueueTask(addTask)
+	processQueueConfig := config.QueueConfig{
+		Name:           "TestQueue",
+		Capacity:       10,
+		Redis:          *redis.NewClient("localhost:6379", "", 0),
+		GoroutineLimit: 32,
 	}
 
-	queue.RegisterCallback(func(result task.TaskResult) {
-		if result.Succeeded() {
-			fmt.Println("Task worked!")
-			fmt.Println(result.Value)
-		}
+	processQueue := queue.NewQueue(processQueueConfig)
+	testQueue.RegisterCallback(func(res task.TaskResult) {
+		fmt.Println("CALLBACK RUNNING")
+		fmt.Println(res.Value)
 	})
-
-	go queue.ProcessTasks()
-	queue.Listen()
+	testQueue.EnqueueTask(testTask)
+	go processQueue.ProcessTasks(sleepAdd)
+	testQueue.Listen()
 }

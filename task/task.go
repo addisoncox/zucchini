@@ -19,9 +19,9 @@ type TaskResult struct {
 }
 
 type Task struct {
-	Function  interface{}
-	Arguments []interface{}
-	Timeout   time.Duration
+	Name    string
+	Data    interface{}
+	Timeout time.Duration
 }
 
 func (t TaskResult) MarshalBinary() ([]byte, error) {

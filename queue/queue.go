@@ -1,6 +1,7 @@
 package queue
 
 import (
+	"encoding/json"
 	"math"
 	"math/rand"
 	"time"
@@ -9,16 +10,22 @@ import (
 	"github.com/addisoncox/zucchini/redis"
 	"github.com/addisoncox/zucchini/task"
 	"github.com/addisoncox/zucchini/util"
+	"github.com/google/uuid"
 )
 
+const ZUCCHINI_TASK_PREFIX = "zhc:task:"
+const ZUCCHINI_RES_PREFIX = "zhc:res:"
+
+type TaskID uuid.UUID
+
 type Task struct {
-	task task.Task
-	id   uint64
+	TaskID  TaskID
+	Data    interface{}
+	Timeout time.Duration
 }
 
 type Queue struct {
 	name                string
-	tasks               chan Task
 	redis               *redis.RedisClient
 	capacity            uint64
 	taskCount           uint64
@@ -28,35 +35,32 @@ type Queue struct {
 	retryStrategy       config.RetryStrategy
 	delay               time.Duration
 	baseJitter          time.Duration
-	taskIDCounter       uint64
-	taskRetryCounter    map[uint64]uint
+	taskRetryCounter    map[TaskID]uint
 	retryLimit          uint
 	customRetryFunction func(uint) time.Duration
+	handlerFunc         func([]byte) interface{}
 }
 
-func (q *Queue) EnqueueTask(task task.Task) {
+func (q *Queue) EnqueueTask(task task.Task) TaskID {
 	if q.taskCount < q.capacity {
-		q.taskIDCounter++
-		q.taskRetryCounter[q.taskIDCounter] = 0
-		q.tasks <- Task{
-			task: task,
-			id:   q.taskIDCounter,
+		taskID := TaskID(uuid.New())
+		taskBytes, err := json.Marshal(
+			Task{
+				TaskID:  taskID,
+				Data:    task.Data,
+				Timeout: task.Timeout,
+			})
+		if err != nil {
+			panic("Could not marshall task data.")
+		}
+		q.taskRetryCounter[taskID] = 0
+		q.redis.LPush(ZUCCHINI_TASK_PREFIX+q.name, taskBytes)
+		if taskBytes == nil {
 		}
 		util.AtomicInc(&q.taskCount)
+		return taskID
 	} else {
 		panic("Tried to enqueue more tasks than queue capacity")
-	}
-}
-
-func (q *Queue) RunNextTask() {
-	if q.taskCount > 0 {
-		nextTask := <-q.tasks
-		q.processTask(
-			nextTask.task.Function,
-			nextTask.task.Timeout,
-			nextTask.id,
-			nextTask.task.Arguments...,
-		)
 	}
 }
 
@@ -76,19 +80,25 @@ func (q *Queue) handleTimeout(retryCount uint) {
 }
 
 func (q *Queue) processTask(
-	function interface{},
+	handlerFunc func([]byte) interface{},
+	taskID TaskID,
+	taskData []byte,
 	timeout time.Duration,
-	taskID uint64,
-	arguments ...interface{},
 ) {
-	result := make(chan task.TaskResult, 1)
+	result := make(chan interface{}, 1)
 	go func() {
-		result <- util.Call(function, arguments...)
+		result <- handlerFunc(taskData)
 	}()
 
 	select {
-	case taskResult := <-result:
-		q.redis.LPush(q.name, taskResult)
+	case resultValue := <-result:
+		serializedResult, _ := json.Marshal(resultValue)
+		serializedResultString := string(serializedResult)
+		taskResult := task.TaskResult{
+			Status: task.Succeeded,
+			Value:  serializedResultString,
+		}
+		q.redis.LPush(ZUCCHINI_RES_PREFIX+q.name, taskResult)
 		util.AtomicDec(&q.goroutinesRunning)
 	case <-time.After(timeout):
 		var taskResult task.TaskResult
@@ -106,9 +116,9 @@ func (q *Queue) processTask(
 			}
 			q.taskRetryCounter[taskID]++
 			q.handleTimeout(q.taskRetryCounter[taskID])
-			q.processTask(function, timeout, taskID, arguments...)
+			q.processTask(handlerFunc, taskID, taskData, timeout)
 		}
-		q.redis.LPush(q.name, taskResult)
+		q.redis.LPush(ZUCCHINI_RES_PREFIX+q.name, taskResult)
 	}
 }
 
@@ -119,24 +129,26 @@ func (q *Queue) processTask(
 		util.AtomicDec(&q.goroutinesRunning)
 	}
 */
-func (q *Queue) ProcessTasks() {
+func (q *Queue) ProcessTasks(handlerFunc func([]byte) interface{}) {
+	q.handlerFunc = handlerFunc
 	for {
-		time.Sleep(time.Second)
-		for q.taskCount > 0 {
-			if q.goroutinesRunning < q.goroutineLimit {
-				nextTask := <-q.tasks
-				q.taskCount--
-				q.goroutinesRunning++
-				go q.processTask(
-					nextTask.task.Function,
-					nextTask.task.Timeout,
-					nextTask.id,
-					nextTask.task.Arguments...,
-				)
-			} else {
-				break
-			}
+		if q.goroutinesRunning > q.goroutineLimit {
+			time.Sleep(time.Second)
+			continue
 		}
+		if q.redis.LLen(ZUCCHINI_TASK_PREFIX+q.name) == 0 {
+			time.Sleep(time.Second)
+			continue
+		}
+		taskData, err := q.redis.BRPop(ZUCCHINI_TASK_PREFIX + q.name)
+		if err != nil {
+			panic(err.Error())
+		}
+		var task Task
+		json.Unmarshal([]byte(taskData), &task)
+		serializedTaskData, _ := json.Marshal(task.Data)
+		util.AtomicInc(&q.goroutinesRunning)
+		go q.processTask(q.handlerFunc, task.TaskID, serializedTaskData, task.Timeout)
 	}
 }
 
@@ -146,8 +158,11 @@ func (q *Queue) RegisterCallback(callback func(task.TaskResult)) {
 
 func (q *Queue) Listen() {
 	for {
-
-		value, err := q.redis.BRPop(q.name)
+		if q.redis.LLen(ZUCCHINI_RES_PREFIX+q.name) == 0 {
+			time.Sleep(time.Second)
+			continue
+		}
+		value, err := q.redis.BRPop(ZUCCHINI_RES_PREFIX + q.name)
 		if q.callback == nil {
 			return
 		}
@@ -168,7 +183,6 @@ func (q *Queue) Listen() {
 func NewQueue(cfg config.QueueConfig) Queue {
 	return Queue{
 		name:                cfg.Name,
-		tasks:               make(chan Task, cfg.Capacity),
 		redis:               &cfg.Redis,
 		capacity:            cfg.Capacity,
 		taskCount:           0,
@@ -178,9 +192,9 @@ func NewQueue(cfg config.QueueConfig) Queue {
 		retryStrategy:       cfg.RetryStrategy,
 		delay:               cfg.Delay,
 		baseJitter:          cfg.BaseJitter,
-		taskIDCounter:       0,
-		taskRetryCounter:    make(map[uint64]uint),
+		taskRetryCounter:    make(map[TaskID]uint),
 		retryLimit:          cfg.RetryLimit,
 		customRetryFunction: cfg.CustomRetryFunction,
+		handlerFunc:         nil,
 	}
 }
