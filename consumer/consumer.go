@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"math"
 	"math/rand"
+	"net/http"
 	"time"
 
 	"github.com/addisoncox/zucchini/redis"
@@ -25,6 +26,7 @@ type Consumer[TaskArgType, TaskResultType any] struct {
 	taskRetryCounter    map[task.TaskID]uint
 	taskTimeouts        map[task.TaskID]time.Duration
 	taskArgs            map[task.TaskID]TaskArgType
+	cancelQueue         map[task.TaskID]bool
 }
 
 func NewConsumer[TaskArgType, TaskResultType any](
@@ -46,7 +48,21 @@ func NewConsumer[TaskArgType, TaskResultType any](
 		taskRetryCounter:    make(map[task.TaskID]uint),
 		taskTimeouts:        make(map[task.TaskID]time.Duration),
 		taskArgs:            make(map[task.TaskID]TaskArgType),
+		cancelQueue:         make(map[task.TaskID]bool),
 	}
+}
+
+func monitor(w http.ResponseWriter, req *http.Request) {
+	http.ServeFile(w, req, "../static/monitor.html")
+}
+
+func taskInfo(w http.ResponseWriter, req *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+}
+
+func (c *Consumer[TaskArgType, TaskResultType]) StartMonitorServer(addr string) {
+	http.HandleFunc("/", monitor)
+	http.ListenAndServe(addr, nil)
 }
 
 func (c *Consumer[TaskArgType, TaskResultType]) handleTimeout(retryCount uint) {
@@ -114,8 +130,11 @@ func (c *Consumer[TaskArgType, TaskResultType]) cancelTask(taskID task.TaskID) e
 			ID:       taskID,
 			Timeout:  c.taskTimeouts[taskID],
 			Argument: c.taskArgs[taskID],
-		})
-	c.redis.LRem(task.ZUCCHINI_TASK_PREFIX+c.taskName, 1, taskPayloadData)
+		},
+	)
+	if c.redis.LRem(task.ZUCCHINI_TASK_PREFIX+c.taskName, 1, taskPayloadData) == 0 {
+		c.cancelQueue[taskID] = true
+	}
 	return nil
 }
 
@@ -151,6 +170,11 @@ func (c *Consumer[TaskArgType, TaskResultType]) ProcessTasks() {
 		var taskPayload task.TaskPayload
 		var taskArg TaskArgType
 		json.Unmarshal([]byte(taskData), &taskPayload)
+		_, taskCancelled := c.cancelQueue[taskPayload.ID]
+		if taskCancelled {
+			delete(c.cancelQueue, taskPayload.ID)
+			continue
+		}
 		serializedArg, _ := json.Marshal(taskPayload.Argument)
 		json.Unmarshal(serializedArg, &taskArg)
 		util.AtomicInc(&c.currentConcurrency)

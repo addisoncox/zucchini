@@ -1,7 +1,6 @@
 package task
 
 import (
-	"encoding/json"
 	"time"
 
 	"github.com/google/uuid"
@@ -54,23 +53,4 @@ type TaskPayload struct {
 	ID       TaskID
 	Timeout  time.Duration
 	Argument interface{}
-}
-
-// Prod[T, B] (mytask)
-type Task struct {
-	Name    string
-	Data    interface{}
-	Timeout time.Duration
-}
-
-func (t TaskResult) MarshalBinary() ([]byte, error) {
-	return json.Marshal(t.Value)
-}
-
-func (t TaskResult) UnmarshalBinary(b []byte) error {
-	return json.Unmarshal(b, &t.Value)
-}
-
-func (t TaskResult) Succeeded() bool {
-	return t.Status == Succeeded
 }

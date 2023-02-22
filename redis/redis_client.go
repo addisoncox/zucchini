@@ -53,6 +53,7 @@ func (r *RedisClient) LLen(key string) uint64 {
 	}
 }
 
-func (r *RedisClient) LRem(key string, count int64, value interface{}) {
-	r.client.LRem(ctx, key, count, value)
+func (r *RedisClient) LRem(key string, count int64, value interface{}) uint64 {
+	removed, _ := r.client.LRem(ctx, key, count, value).Uint64()
+	return removed
 }
