@@ -72,3 +72,13 @@ func (p *Producer[TaskArgType, TaskResultType]) AwaitCallback() {
 		p.taskCallback(result.Status, resultValue)
 	}
 }
+
+func (p *Producer[TaskArgType, TaskResultType]) CancelTask(taskID task.TaskID) {
+	cmdPayload, _ := json.Marshal(
+		task.TaskCommand{
+			TaskId:  taskID,
+			Command: "cancel",
+		},
+	)
+	p.redis.LPush(task.ZUCCHINI_CMD_PREFIX+p.taskName, cmdPayload)
+}

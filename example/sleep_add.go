@@ -46,8 +46,12 @@ func main() {
 		redis.NewClient("localhost:6379", "", 0),
 		10,
 	)
-
-	taskProducer.QueueTask(Numbers{X: 3, Y: 4})
+	taskIDs := make([]task.TaskID, 10)
+	for i := 0; i < 10; i++ {
+		taskIDs = append(taskIDs, taskProducer.QueueTask(Numbers{X: 3, Y: 4 + i}))
+	}
+	taskProducer.CancelTask(taskIDs[1])
+	time.Sleep(time.Second)
 	go taskConsumer.ProcessTasks()
 	taskProducer.AwaitCallback()
 }

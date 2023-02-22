@@ -43,6 +43,12 @@ type TaskDefinition[TaskArgType, TaskResultType any] struct {
 
 const ZUCCHINI_TASK_PREFIX = "zhc:task:"
 const ZUCCHINI_RES_PREFIX = "zhc:res:"
+const ZUCCHINI_CMD_PREFIX = "zhc:cmd:"
+
+type TaskCommand struct {
+	TaskId  TaskID
+	Command string
+}
 
 type TaskPayload struct {
 	ID       TaskID

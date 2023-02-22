@@ -23,6 +23,8 @@ type Consumer[TaskArgType, TaskResultType any] struct {
 	maxConcurrency      uint64
 	currentConcurrency  uint64
 	taskRetryCounter    map[task.TaskID]uint
+	taskTimeouts        map[task.TaskID]time.Duration
+	taskArgs            map[task.TaskID]TaskArgType
 }
 
 func NewConsumer[TaskArgType, TaskResultType any](
@@ -42,6 +44,8 @@ func NewConsumer[TaskArgType, TaskResultType any](
 		maxConcurrency:      maxConcurrency,
 		currentConcurrency:  0,
 		taskRetryCounter:    make(map[task.TaskID]uint),
+		taskTimeouts:        make(map[task.TaskID]time.Duration),
+		taskArgs:            make(map[task.TaskID]TaskArgType),
 	}
 }
 
@@ -88,6 +92,8 @@ func (c *Consumer[TaskArgType, TaskResultType]) processTask(
 				Value:  []byte{},
 			}
 			delete(c.taskRetryCounter, taskID)
+			delete(c.taskArgs, taskID)
+			delete(c.taskTimeouts, taskID)
 			util.AtomicDec(&c.currentConcurrency)
 		} else {
 			taskResult = task.TaskResult{
@@ -102,11 +108,37 @@ func (c *Consumer[TaskArgType, TaskResultType]) processTask(
 	}
 }
 
+func (c *Consumer[TaskArgType, TaskResultType]) cancelTask(taskID task.TaskID) error {
+	taskPayloadData, _ := json.Marshal(
+		task.TaskPayload{
+			ID:       taskID,
+			Timeout:  c.taskTimeouts[taskID],
+			Argument: c.taskArgs[taskID],
+		})
+	c.redis.LRem(task.ZUCCHINI_TASK_PREFIX+c.taskName, 1, taskPayloadData)
+	return nil
+}
+
+func (c *Consumer[TaskArgType, TaskResultType]) handleCommand(taskID task.TaskID, command string) {
+	if command == "cancel" {
+		c.cancelTask(taskID)
+	}
+}
+
 func (c *Consumer[TaskArgType, TaskResultType]) ProcessTasks() {
 	for {
 		if c.currentConcurrency >= c.maxConcurrency {
 			time.Sleep(time.Second)
 			continue
+		}
+		for c.redis.LLen(task.ZUCCHINI_CMD_PREFIX+c.taskName) != 0 {
+			cmdData, err := c.redis.BRPop(task.ZUCCHINI_CMD_PREFIX + c.taskName)
+			var cmd task.TaskCommand
+			json.Unmarshal([]byte(cmdData), &cmd)
+			if err != nil {
+				panic(err.Error())
+			}
+			c.handleCommand(cmd.TaskId, cmd.Command)
 		}
 		if c.redis.LLen(task.ZUCCHINI_TASK_PREFIX+c.taskName) == 0 {
 			time.Sleep(time.Second)
@@ -122,6 +154,8 @@ func (c *Consumer[TaskArgType, TaskResultType]) ProcessTasks() {
 		serializedArg, _ := json.Marshal(taskPayload.Argument)
 		json.Unmarshal(serializedArg, &taskArg)
 		util.AtomicInc(&c.currentConcurrency)
+		c.taskArgs[taskPayload.ID] = taskArg
+		c.taskTimeouts[taskPayload.ID] = taskPayload.Timeout
 		go c.processTask(
 			c.taskHandler,
 			taskPayload.ID,
