@@ -1,18 +1,16 @@
-package producer
+package zucchini
 
 import (
 	"encoding/json"
 	"time"
 
-	"github.com/addisoncox/zucchini/redis"
-	"github.com/addisoncox/zucchini/task"
-	"github.com/addisoncox/zucchini/util"
+	"github.com/addisoncox/zucchini/internal"
 	"github.com/google/uuid"
 )
 
 type Producer[TaskArgType, TaskResultType any] struct {
-	redis        *redis.RedisClient
-	taskCallback func(task.TaskStatus, TaskResultType) error
+	redis        *RedisClient
+	taskCallback func(TaskStatus, TaskResultType) error
 	taskName     string
 	taskTimeout  time.Duration
 	maxCapacity  uint64
@@ -20,8 +18,8 @@ type Producer[TaskArgType, TaskResultType any] struct {
 }
 
 func NewProducer[TaskArgType, TaskResultType any](
-	taskDefinition task.TaskDefinition[TaskArgType, TaskResultType],
-	redis *redis.RedisClient,
+	taskDefinition TaskDefinition[TaskArgType, TaskResultType],
+	redis *RedisClient,
 	maxCapacity uint64,
 ) Producer[TaskArgType, TaskResultType] {
 	return Producer[TaskArgType, TaskResultType]{
@@ -34,20 +32,20 @@ func NewProducer[TaskArgType, TaskResultType any](
 	}
 }
 
-func (p *Producer[TaskArgType, TaskResultType]) QueueTask(args TaskArgType) task.TaskID {
+func (p *Producer[TaskArgType, TaskResultType]) QueueTask(args TaskArgType) TaskID {
 	if p.taskCount < p.maxCapacity {
-		taskID := task.TaskID(uuid.New())
+		taskID := TaskID(uuid.New())
 		taskBytes, err := json.Marshal(
-			task.TaskPayload{
-				ID:       taskID,
+			internal.TaskPayload{
+				ID:       uuid.UUID(taskID),
 				Timeout:  p.taskTimeout,
 				Argument: args,
 			})
 		if err != nil {
 			panic("Could not marshall task data.")
 		}
-		p.redis.LPush(task.ZUCCHINI_TASK_PREFIX+p.taskName, taskBytes)
-		util.AtomicInc(&p.taskCount)
+		p.redis.LPush(internal.ZUCCHINI_TASK_PREFIX+p.taskName, taskBytes)
+		internal.AtomicInc(&p.taskCount)
 		return taskID
 	} else {
 		panic("Tried to enqueue more tasks than queue capacity")
@@ -56,16 +54,16 @@ func (p *Producer[TaskArgType, TaskResultType]) QueueTask(args TaskArgType) task
 
 func (p *Producer[TaskArgType, TaskResultType]) AwaitCallback() {
 	for {
-		if p.redis.LLen(task.ZUCCHINI_RES_PREFIX+p.taskName) == 0 {
+		if p.redis.LLen(internal.ZUCCHINI_RES_PREFIX+p.taskName) == 0 {
 			time.Sleep(time.Second)
 			continue
 		}
-		resultData, _ := p.redis.BRPop(task.ZUCCHINI_RES_PREFIX + p.taskName)
-		util.AtomicDec(&p.taskCount)
+		resultData, _ := p.redis.BRPop(internal.ZUCCHINI_RES_PREFIX + p.taskName)
+		internal.AtomicDec(&p.taskCount)
 		if p.taskCallback == nil {
 			return
 		}
-		var result task.TaskResult
+		var result TaskResult
 		var resultValue TaskResultType
 		json.Unmarshal([]byte(resultData), &result)
 		json.Unmarshal(result.Value, &resultValue)
@@ -73,12 +71,12 @@ func (p *Producer[TaskArgType, TaskResultType]) AwaitCallback() {
 	}
 }
 
-func (p *Producer[TaskArgType, TaskResultType]) CancelTask(taskID task.TaskID) {
+func (p *Producer[TaskArgType, TaskResultType]) CancelTask(taskID TaskID) {
 	cmdPayload, _ := json.Marshal(
-		task.TaskCommand{
-			TaskId:  taskID,
+		internal.TaskCommand{
+			TaskId:  uuid.UUID(taskID),
 			Command: "cancel",
 		},
 	)
-	p.redis.LPush(task.ZUCCHINI_CMD_PREFIX+p.taskName, cmdPayload)
+	p.redis.LPush(internal.ZUCCHINI_CMD_PREFIX+p.taskName, cmdPayload)
 }

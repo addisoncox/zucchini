@@ -1,4 +1,4 @@
-package consumer
+package zucchini
 
 import (
 	"encoding/json"
@@ -7,31 +7,30 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/addisoncox/zucchini/redis"
-	"github.com/addisoncox/zucchini/task"
-	"github.com/addisoncox/zucchini/util"
+	"github.com/addisoncox/zucchini/internal"
+	"github.com/google/uuid"
 )
 
 type Consumer[TaskArgType, TaskResultType any] struct {
-	redis               *redis.RedisClient
+	redis               *RedisClient
 	taskHandler         func(TaskArgType) TaskResultType
 	taskName            string
-	retryStrategy       task.RetryStrategy
+	retryStrategy       RetryStrategy
 	maxRetries          uint
 	retryJitter         time.Duration
 	retryDelay          time.Duration
 	customRetryFunction func(uint) time.Duration
 	maxConcurrency      uint64
 	currentConcurrency  uint64
-	taskRetryCounter    map[task.TaskID]uint
-	taskTimeouts        map[task.TaskID]time.Duration
-	taskArgs            map[task.TaskID]TaskArgType
-	cancelQueue         map[task.TaskID]bool
+	taskRetryCounter    map[TaskID]uint
+	taskTimeouts        map[TaskID]time.Duration
+	taskArgs            map[TaskID]TaskArgType
+	cancelQueue         map[TaskID]bool
 }
 
 func NewConsumer[TaskArgType, TaskResultType any](
-	taskDefinition task.TaskDefinition[TaskArgType, TaskResultType],
-	redis *redis.RedisClient,
+	taskDefinition TaskDefinition[TaskArgType, TaskResultType],
+	redis *RedisClient,
 	maxConcurrency uint64,
 ) Consumer[TaskArgType, TaskResultType] {
 	return Consumer[TaskArgType, TaskResultType]{
@@ -45,10 +44,10 @@ func NewConsumer[TaskArgType, TaskResultType any](
 		customRetryFunction: taskDefinition.CustomRetryFunction,
 		maxConcurrency:      maxConcurrency,
 		currentConcurrency:  0,
-		taskRetryCounter:    make(map[task.TaskID]uint),
-		taskTimeouts:        make(map[task.TaskID]time.Duration),
-		taskArgs:            make(map[task.TaskID]TaskArgType),
-		cancelQueue:         make(map[task.TaskID]bool),
+		taskRetryCounter:    make(map[TaskID]uint),
+		taskTimeouts:        make(map[TaskID]time.Duration),
+		taskArgs:            make(map[TaskID]TaskArgType),
+		cancelQueue:         make(map[TaskID]bool),
 	}
 }
 
@@ -66,23 +65,23 @@ func (c *Consumer[TaskArgType, TaskResultType]) StartMonitorServer(addr string) 
 }
 
 func (c *Consumer[TaskArgType, TaskResultType]) handleTimeout(retryCount uint) {
-	if c.retryStrategy == task.ExponentialBackoff {
+	if c.retryStrategy == ExponentialBackoff {
 		backoffTime := c.retryDelay * time.Duration(math.Pow(2, float64(retryCount)))
 		rand.Seed(time.Now().UnixNano())
 		jitter := c.retryJitter * time.Duration(rand.Float64()*2)
 		time.Sleep(backoffTime + jitter)
-	} else if c.retryStrategy == task.SetDelay {
+	} else if c.retryStrategy == SetDelay {
 		rand.Seed(time.Now().UnixNano())
 		jitter := c.retryDelay * time.Duration(rand.Float64()*2)
 		time.Sleep(c.retryJitter + jitter)
-	} else if c.retryStrategy == task.Custom {
+	} else if c.retryStrategy == Custom {
 		time.Sleep(c.customRetryFunction(retryCount))
 	}
 }
 
 func (c *Consumer[TaskArgType, TaskResultType]) processTask(
 	handlerFunc func(TaskArgType) TaskResultType,
-	taskID task.TaskID,
+	taskID TaskID,
 	arg TaskArgType,
 	timeout time.Duration,
 ) {
@@ -94,51 +93,51 @@ func (c *Consumer[TaskArgType, TaskResultType]) processTask(
 	select {
 	case resultValue := <-result:
 		serializedResultValue, _ := json.Marshal(resultValue)
-		serializedTaskResult, _ := json.Marshal(task.TaskResult{
-			Status: task.Succeeded,
+		serializedTaskResult, _ := json.Marshal(TaskResult{
+			Status: Succeeded,
 			Value:  serializedResultValue,
 		})
-		c.redis.LPush(task.ZUCCHINI_RES_PREFIX+c.taskName, serializedTaskResult)
-		util.AtomicDec(&c.currentConcurrency)
+		c.redis.LPush(internal.ZUCCHINI_RES_PREFIX+c.taskName, serializedTaskResult)
+		internal.AtomicDec(&c.currentConcurrency)
 	case <-time.After(timeout):
-		var taskResult task.TaskResult
+		var taskResult TaskResult
 		if c.taskRetryCounter[taskID] > c.maxRetries {
-			taskResult = task.TaskResult{
-				Status: task.Failed,
+			taskResult = TaskResult{
+				Status: Failed,
 				Value:  []byte{},
 			}
 			delete(c.taskRetryCounter, taskID)
 			delete(c.taskArgs, taskID)
 			delete(c.taskTimeouts, taskID)
-			util.AtomicDec(&c.currentConcurrency)
+			internal.AtomicDec(&c.currentConcurrency)
 		} else {
-			taskResult = task.TaskResult{
-				Status: task.Timeout,
+			taskResult = TaskResult{
+				Status: Timeout,
 				Value:  []byte{},
 			}
 			c.taskRetryCounter[taskID]++
 			c.handleTimeout(c.taskRetryCounter[taskID])
 			c.processTask(handlerFunc, taskID, arg, timeout)
 		}
-		c.redis.LPush(task.ZUCCHINI_RES_PREFIX+c.taskName, taskResult)
+		c.redis.LPush(internal.ZUCCHINI_RES_PREFIX+c.taskName, taskResult)
 	}
 }
 
-func (c *Consumer[TaskArgType, TaskResultType]) cancelTask(taskID task.TaskID) error {
+func (c *Consumer[TaskArgType, TaskResultType]) cancelTask(taskID TaskID) error {
 	taskPayloadData, _ := json.Marshal(
-		task.TaskPayload{
-			ID:       taskID,
+		internal.TaskPayload{
+			ID:       uuid.UUID(taskID),
 			Timeout:  c.taskTimeouts[taskID],
 			Argument: c.taskArgs[taskID],
 		},
 	)
-	if c.redis.LRem(task.ZUCCHINI_TASK_PREFIX+c.taskName, 1, taskPayloadData) == 0 {
+	if c.redis.LRem(internal.ZUCCHINI_TASK_PREFIX+c.taskName, 1, taskPayloadData) == 0 {
 		c.cancelQueue[taskID] = true
 	}
 	return nil
 }
 
-func (c *Consumer[TaskArgType, TaskResultType]) handleCommand(taskID task.TaskID, command string) {
+func (c *Consumer[TaskArgType, TaskResultType]) handleCommand(taskID TaskID, command string) {
 	if command == "cancel" {
 		c.cancelTask(taskID)
 	}
@@ -150,39 +149,39 @@ func (c *Consumer[TaskArgType, TaskResultType]) ProcessTasks() {
 			time.Sleep(time.Second)
 			continue
 		}
-		for c.redis.LLen(task.ZUCCHINI_CMD_PREFIX+c.taskName) != 0 {
-			cmdData, err := c.redis.BRPop(task.ZUCCHINI_CMD_PREFIX + c.taskName)
-			var cmd task.TaskCommand
+		for c.redis.LLen(internal.ZUCCHINI_CMD_PREFIX+c.taskName) != 0 {
+			cmdData, err := c.redis.BRPop(internal.ZUCCHINI_CMD_PREFIX + c.taskName)
+			var cmd internal.TaskCommand
 			json.Unmarshal([]byte(cmdData), &cmd)
 			if err != nil {
 				panic(err.Error())
 			}
-			c.handleCommand(cmd.TaskId, cmd.Command)
+			c.handleCommand(TaskID(cmd.TaskId), cmd.Command)
 		}
-		if c.redis.LLen(task.ZUCCHINI_TASK_PREFIX+c.taskName) == 0 {
+		if c.redis.LLen(internal.ZUCCHINI_TASK_PREFIX+c.taskName) == 0 {
 			time.Sleep(time.Second)
 			continue
 		}
-		taskData, err := c.redis.BRPop(task.ZUCCHINI_TASK_PREFIX + c.taskName)
+		taskData, err := c.redis.BRPop(internal.ZUCCHINI_TASK_PREFIX + c.taskName)
 		if err != nil {
 			panic(err.Error())
 		}
-		var taskPayload task.TaskPayload
+		var taskPayload internal.TaskPayload
 		var taskArg TaskArgType
 		json.Unmarshal([]byte(taskData), &taskPayload)
-		_, taskCancelled := c.cancelQueue[taskPayload.ID]
+		_, taskCancelled := c.cancelQueue[TaskID(taskPayload.ID)]
 		if taskCancelled {
-			delete(c.cancelQueue, taskPayload.ID)
+			delete(c.cancelQueue, TaskID(taskPayload.ID))
 			continue
 		}
 		serializedArg, _ := json.Marshal(taskPayload.Argument)
 		json.Unmarshal(serializedArg, &taskArg)
-		util.AtomicInc(&c.currentConcurrency)
-		c.taskArgs[taskPayload.ID] = taskArg
-		c.taskTimeouts[taskPayload.ID] = taskPayload.Timeout
+		internal.AtomicInc(&c.currentConcurrency)
+		c.taskArgs[TaskID(taskPayload.ID)] = taskArg
+		c.taskTimeouts[TaskID(taskPayload.ID)] = taskPayload.Timeout
 		go c.processTask(
 			c.taskHandler,
-			taskPayload.ID,
+			TaskID(taskPayload.ID),
 			taskArg,
 			taskPayload.Timeout,
 		)

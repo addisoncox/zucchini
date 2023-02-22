@@ -1,4 +1,4 @@
-package redis
+package zucchini
 
 import (
 	"context"
@@ -8,25 +8,25 @@ import (
 )
 
 type RedisClient struct {
-	client *redis.Client
+	Client *redis.Client
 }
 
-var ctx = context.Background()
-
-func NewClient(addr string, password string, db int) *RedisClient {
-	return &RedisClient{client: redis.NewClient(&redis.Options{
+func NewRedisClient(addr string, password string, db int) *RedisClient {
+	return &RedisClient{Client: redis.NewClient(&redis.Options{
 		Addr:     addr,
 		Password: password,
 		DB:       db,
 	})}
 }
 
+var ctx = context.Background()
+
 func (r *RedisClient) Set(key string, value interface{}) {
-	r.client.Set(ctx, key, value, 0)
+	r.Client.Set(ctx, key, value, 0)
 }
 
 func (r *RedisClient) Get(key string) interface{} {
-	res, err := r.client.Do(ctx, "get", key).Result()
+	res, err := r.Client.Do(ctx, "get", key).Result()
 	if err != nil {
 		panic(err.Error())
 	}
@@ -34,11 +34,11 @@ func (r *RedisClient) Get(key string) interface{} {
 }
 
 func (r *RedisClient) LPush(key string, value interface{}) {
-	r.client.LPush(ctx, key, value)
+	r.Client.LPush(ctx, key, value)
 }
 
 func (r *RedisClient) BRPop(key string) (string, error) {
-	values, err := r.client.BRPop(ctx, time.Second, key).Result()
+	values, err := r.Client.BRPop(ctx, time.Second, key).Result()
 	if err != nil {
 		return "", err
 	}
@@ -46,7 +46,7 @@ func (r *RedisClient) BRPop(key string) (string, error) {
 }
 
 func (r *RedisClient) LLen(key string) uint64 {
-	if res, err := r.client.LLen(ctx, key).Uint64(); err != nil {
+	if res, err := r.Client.LLen(ctx, key).Uint64(); err != nil {
 		panic(err.Error())
 	} else {
 		return res
@@ -54,6 +54,6 @@ func (r *RedisClient) LLen(key string) uint64 {
 }
 
 func (r *RedisClient) LRem(key string, count int64, value interface{}) uint64 {
-	removed, _ := r.client.LRem(ctx, key, count, value).Uint64()
+	removed, _ := r.Client.LRem(ctx, key, count, value).Uint64()
 	return removed
 }

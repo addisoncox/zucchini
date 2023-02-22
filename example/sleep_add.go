@@ -4,10 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/addisoncox/zucchini/consumer"
-	"github.com/addisoncox/zucchini/producer"
-	"github.com/addisoncox/zucchini/redis"
-	"github.com/addisoncox/zucchini/task"
+	"github.com/addisoncox/zucchini"
 )
 
 type Numbers struct {
@@ -20,33 +17,33 @@ func sleepAdd(numbers Numbers) int {
 	return numbers.X + numbers.Y
 }
 
-func sleepAddCallback(status task.TaskStatus, res int) error {
+func sleepAddCallback(status zucchini.TaskStatus, res int) error {
 	fmt.Println("CALLBACK RUNNING")
 	fmt.Println(res)
 	return nil
 }
 
 func main() {
-	sleepAddTaskDefinition := task.TaskDefinition[Numbers, int]{
+	sleepAddTaskDefinition := zucchini.TaskDefinition[Numbers, int]{
 		TaskHandler:   sleepAdd,
 		TaskCallback:  sleepAddCallback,
 		Timeout:       time.Second * 5,
 		TaskName:      "sleepAdd",
 		MaxRetries:    2,
-		RetryStrategy: task.ExponentialBackoff,
+		RetryStrategy: zucchini.ExponentialBackoff,
 	}
 
-	taskProducer := producer.NewProducer(
+	taskProducer := zucchini.NewProducer(
 		sleepAddTaskDefinition,
-		redis.NewClient("localhost:6379", "", 0),
+		zucchini.NewRedisClient("localhost:6379", "", 0),
 		10,
 	)
-	taskConsumer := consumer.NewConsumer(
+	taskConsumer := zucchini.NewConsumer(
 		sleepAddTaskDefinition,
-		redis.NewClient("localhost:6379", "", 0),
+		zucchini.NewRedisClient("localhost:6379", "", 0),
 		10,
 	)
-	taskIDs := make([]task.TaskID, 0)
+	taskIDs := make([]zucchini.TaskID, 0)
 	for i := 0; i < 10; i++ {
 		taskIDs = append(taskIDs, taskProducer.QueueTask(Numbers{X: 3, Y: 4 + i}))
 	}
