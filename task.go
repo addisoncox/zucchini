@@ -3,17 +3,45 @@ package zucchini
 import (
 	"time"
 
+	"github.com/addisoncox/zucchini/internal"
 	"github.com/google/uuid"
 )
 
-type TaskStatus int
-type TaskID uuid.UUID
+type TaskStatus struct {
+	Status internal.TaskStatus
+}
 
-const (
-	Failed TaskStatus = iota
-	Succeeded
-	Timeout
-)
+func (t TaskStatus) Failed() bool {
+	return t.Status == internal.Failed
+}
+
+func (t TaskStatus) Succeeded() bool {
+	return t.Status == internal.Succeeded
+}
+
+func (t TaskStatus) Queued() bool {
+	return t.Status == internal.Queued
+}
+
+func (t TaskStatus) Processing() bool {
+	return t.Status == internal.Processing
+}
+
+func (t TaskStatus) String() string {
+	switch taskStatus := t.Status; taskStatus {
+	case internal.Failed:
+		return "failed"
+	case internal.Succeeded:
+		return "succeeded"
+	case internal.Queued:
+		return "queued"
+	case internal.Processing:
+		return "processing"
+	}
+	return "unknown task status"
+}
+
+type TaskID uuid.UUID
 
 type TaskResult struct {
 	Status TaskStatus

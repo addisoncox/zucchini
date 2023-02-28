@@ -36,7 +36,6 @@ func main() {
 	taskProducer := zucchini.NewProducer(
 		sleepAddTaskDefinition,
 		zucchini.NewRedisClient("localhost:6379", "", 0),
-		10,
 	)
 	taskConsumer := zucchini.NewConsumer(
 		sleepAddTaskDefinition,
@@ -44,12 +43,12 @@ func main() {
 		10,
 	)
 	taskIDs := make([]zucchini.TaskID, 0)
-	for i := 0; i < 10; i++ {
+	for i := 0; i < 20; i++ {
 		taskIDs = append(taskIDs, taskProducer.QueueTask(Numbers{X: 3, Y: 4 + i}))
 	}
 	taskProducer.CancelTask(taskIDs[1])
 	time.Sleep(time.Second)
+	go taskConsumer.PTasks()
 	go taskConsumer.StartMonitorServer(":8089")
-	go taskConsumer.ProcessTasks()
 	taskProducer.AwaitCallback()
 }

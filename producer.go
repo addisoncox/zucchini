@@ -13,43 +13,36 @@ type Producer[TaskArgType, TaskResultType any] struct {
 	taskCallback func(TaskStatus, TaskResultType) error
 	taskName     string
 	taskTimeout  time.Duration
-	maxCapacity  uint64
 	taskCount    uint64
 }
 
 func NewProducer[TaskArgType, TaskResultType any](
 	taskDefinition TaskDefinition[TaskArgType, TaskResultType],
 	redis *RedisClient,
-	maxCapacity uint64,
 ) Producer[TaskArgType, TaskResultType] {
 	return Producer[TaskArgType, TaskResultType]{
 		redis:        redis,
 		taskCallback: taskDefinition.TaskCallback,
 		taskName:     taskDefinition.TaskName,
 		taskTimeout:  taskDefinition.Timeout,
-		maxCapacity:  maxCapacity,
 		taskCount:    0,
 	}
 }
 
 func (p *Producer[TaskArgType, TaskResultType]) QueueTask(args TaskArgType) TaskID {
-	if p.taskCount < p.maxCapacity {
-		taskID := TaskID(uuid.New())
-		taskBytes, err := json.Marshal(
-			internal.TaskPayload{
-				ID:       uuid.UUID(taskID),
-				Timeout:  p.taskTimeout,
-				Argument: args,
-			})
-		if err != nil {
-			panic("Could not marshall task data.")
-		}
-		p.redis.LPush(internal.ZUCCHINI_TASK_PREFIX+p.taskName, taskBytes)
-		internal.AtomicInc(&p.taskCount)
-		return taskID
-	} else {
-		panic("Tried to enqueue more tasks than queue capacity")
+	taskID := TaskID(uuid.New())
+	taskBytes, err := json.Marshal(
+		internal.TaskPayload{
+			ID:       uuid.UUID(taskID),
+			Timeout:  p.taskTimeout,
+			Argument: args,
+		})
+	if err != nil {
+		panic("Could not marshall task data.")
 	}
+	p.redis.LPush(internal.ZUCCHINI_TASK_PREFIX+p.taskName, taskBytes)
+	internal.AtomicInc(&p.taskCount)
+	return taskID
 }
 
 func (p *Producer[TaskArgType, TaskResultType]) AwaitCallback() {

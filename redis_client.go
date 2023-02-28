@@ -45,6 +45,14 @@ func (r *RedisClient) BRPop(key string) (string, error) {
 	return values[1], err
 }
 
+func (r *RedisClient) RPop(key string) (string, error) {
+	value, err := r.Client.RPop(ctx, key).Result()
+	if err != nil {
+		return "", err
+	}
+	return value, err
+}
+
 func (r *RedisClient) LLen(key string) uint64 {
 	if res, err := r.Client.LLen(ctx, key).Uint64(); err != nil {
 		panic(err.Error())

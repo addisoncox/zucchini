@@ -20,3 +20,12 @@ type TaskPayload struct {
 	Timeout  time.Duration
 	Argument interface{}
 }
+
+type TaskStatus uint8
+
+const (
+	Queued TaskStatus = iota
+	Processing
+	Failed
+	Succeeded
+)
