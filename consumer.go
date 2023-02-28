@@ -2,7 +2,6 @@ package zucchini
 
 import (
 	"encoding/json"
-	"fmt"
 	"math"
 	"math/rand"
 	"net/http"
@@ -29,6 +28,8 @@ type Consumer[TaskArgType, TaskResultType any] struct {
 	taskStatuses        map[TaskID]internal.TaskStatus
 	cancelQueue         map[TaskID]bool
 	processedQueued     []TaskID
+	pausePollTime       time.Duration
+	queuedTaskIDs       chan TaskID
 }
 
 type taskData[T any] struct {
@@ -60,6 +61,9 @@ func NewConsumer[TaskArgType, TaskResultType any](
 		taskStatuses:        make(map[TaskID]internal.TaskStatus),
 		cancelQueue:         make(map[TaskID]bool),
 		processedQueued:     make([]TaskID, 0),
+		pausePollTime:       time.Second,
+		// TODO: Wrapper for unbounded?
+		queuedTaskIDs: make(chan TaskID, 1000),
 	}
 }
 
@@ -77,6 +81,32 @@ func (c *Consumer[TaskArgType, TaskResultType]) resultQueueName() string {
 
 func monitor(w http.ResponseWriter, req *http.Request) {
 	http.ServeFile(w, req, "../static/monitor.html")
+}
+
+func (c *Consumer[TaskArgType, TaskResultType]) pausePoll() {
+	time.Sleep(c.pausePollTime)
+}
+
+func (c *Consumer[TaskArgType, TaskResultType]) saveTask(taskID TaskID, payload string) {
+	c.redis.Set(uuid.UUID(taskID).String(), payload)
+	c.queuedTaskIDs <- taskID
+}
+
+func (c *Consumer[TaskArgType, TaskResultType]) getTask(taskID TaskID) internal.TaskPayload {
+	res := c.redis.Get(uuid.UUID(taskID).String())
+	return internal.UnmarshalOrPanic[internal.TaskPayload]([]byte(res))
+}
+
+func (c *Consumer[TaskArgType, TaskResultType]) taskCancelled(taskID TaskID) bool {
+	_, taskCancelled := c.cancelQueue[taskID]
+	return taskCancelled
+}
+
+func (c *Consumer[TaskArgType, TaskResultType]) getTaskArg(taskPayload internal.TaskPayload) TaskArgType {
+	var taskArg TaskArgType
+	serializedArg, _ := json.Marshal(taskPayload.Argument)
+	json.Unmarshal(serializedArg, &taskArg)
+	return taskArg
 }
 
 func (c *Consumer[TaskArgType, TaskResultType]) taskInfo(w http.ResponseWriter, req *http.Request) {
@@ -178,53 +208,6 @@ func (c *Consumer[TaskArgType, TaskResultType]) handleCommand(taskID TaskID, com
 	}
 }
 
-func (c *Consumer[TaskArgType, TaskResultType]) ProcessTasks() {
-	for {
-		for c.redis.LLen(internal.ZUCCHINI_CMD_PREFIX+c.taskName) != 0 {
-			cmdData, err := c.redis.BRPop(internal.ZUCCHINI_CMD_PREFIX + c.taskName)
-			var cmd internal.TaskCommand
-			json.Unmarshal([]byte(cmdData), &cmd)
-			if err != nil {
-				panic(err.Error())
-			}
-			c.handleCommand(TaskID(cmd.TaskId), cmd.Command)
-		}
-		if c.redis.LLen(internal.ZUCCHINI_TASK_PREFIX+c.taskName) == 0 {
-			time.Sleep(time.Second)
-			continue
-		}
-		taskData, err := c.redis.BRPop(internal.ZUCCHINI_TASK_PREFIX + c.taskName)
-		if err != nil {
-			panic(err.Error())
-		}
-		var taskPayload internal.TaskPayload
-		var taskArg TaskArgType
-		json.Unmarshal([]byte(taskData), &taskPayload)
-		_, taskCancelled := c.cancelQueue[TaskID(taskPayload.ID)]
-		if taskCancelled {
-			delete(c.cancelQueue, TaskID(taskPayload.ID))
-			continue
-		}
-		serializedArg, _ := json.Marshal(taskPayload.Argument)
-		json.Unmarshal(serializedArg, &taskArg)
-		internal.AtomicInc(&c.currentConcurrency)
-		c.taskArgs[TaskID(taskPayload.ID)] = taskArg
-		c.taskTimeouts[TaskID(taskPayload.ID)] = taskPayload.Timeout
-		if c.currentConcurrency >= c.maxConcurrency {
-			c.taskStatuses[TaskID(taskPayload.ID)] = internal.Queued
-			time.Sleep(time.Second)
-			continue
-		}
-		c.taskStatuses[TaskID(taskPayload.ID)] = internal.Processing
-		go c.processTask(
-			c.taskHandler,
-			TaskID(taskPayload.ID),
-			taskArg,
-			taskPayload.Timeout,
-		)
-	}
-}
-
 func (c *Consumer[TaskArgType, TaskResultType]) processCommands() {
 	for {
 		if c.redis.LLen(c.commandQueueName()) == 0 {
@@ -242,59 +225,41 @@ func (c *Consumer[TaskArgType, TaskResultType]) processCommands() {
 	}
 }
 
-func (c *Consumer[TaskArgType, TaskResultType]) PTasks() {
-	go c.processCommands()
+func (c *Consumer[TaskArgType, TaskResultType]) queueTasks() {
 	for {
-		if len(c.processedQueued) > 0 {
-			if c.currentConcurrency <= c.currentConcurrency {
-				taskID := c.processedQueued[0]
-				c.processedQueued = c.processedQueued[1:]
-				internal.AtomicInc(&c.currentConcurrency)
-				c.taskStatuses[taskID] = internal.Processing
-				go c.processTask(
-					c.taskHandler,
-					taskID,
-					c.taskArgs[taskID],
-					c.taskTimeouts[taskID],
-				)
-			} else {
-				time.Sleep(1)
-				continue
+		for c.redis.LLen(c.taskQueueName()) > 0 {
+			taskData, err := c.redis.RPop(c.taskQueueName())
+			if err != nil {
+				panic(err.Error())
 			}
-		}
-		if c.redis.LLen(c.taskQueueName()) == 0 {
-			time.Sleep(time.Second)
-			continue
-		}
-		taskData, err := c.redis.BRPop(c.taskQueueName())
-		if err != nil {
-			panic(err.Error())
-		}
-		var taskPayload internal.TaskPayload
-		var taskArg TaskArgType
-		json.Unmarshal([]byte(taskData), &taskPayload)
-		_, taskCancelled := c.cancelQueue[TaskID(taskPayload.ID)]
-		if taskCancelled {
-			delete(c.cancelQueue, TaskID(taskPayload.ID))
-			continue
-		}
-		serializedArg, _ := json.Marshal(taskPayload.Argument)
-		json.Unmarshal(serializedArg, &taskArg)
-		c.taskArgs[TaskID(taskPayload.ID)] = taskArg
-		c.taskTimeouts[TaskID(taskPayload.ID)] = taskPayload.Timeout
-		fmt.Println(c.currentConcurrency, c.maxConcurrency)
-		if c.currentConcurrency >= c.maxConcurrency {
+			var taskPayload internal.TaskPayload
+			json.Unmarshal([]byte(taskData), &taskPayload)
+			c.saveTask(TaskID(taskPayload.ID), taskData)
 			c.taskStatuses[TaskID(taskPayload.ID)] = internal.Queued
-			c.processedQueued = append(c.processedQueued, TaskID(taskPayload.ID))
-			time.Sleep(time.Second)
+		}
+		c.pausePoll()
+	}
+}
+
+func (c *Consumer[TaskArgType, TaskResultType]) ProcessTasks() {
+	go c.processCommands()
+	go c.queueTasks()
+	for {
+		if c.currentConcurrency >= c.maxConcurrency {
+			c.pausePoll()
 			continue
 		}
+		nextTaskID := <-c.queuedTaskIDs
+		if c.taskCancelled(nextTaskID) {
+			continue
+		}
+		taskPayload := c.getTask(nextTaskID)
 		internal.AtomicInc(&c.currentConcurrency)
-		c.taskStatuses[TaskID(taskPayload.ID)] = internal.Processing
+		c.taskStatuses[nextTaskID] = internal.Processing
 		go c.processTask(
 			c.taskHandler,
-			TaskID(taskPayload.ID),
-			taskArg,
+			nextTaskID,
+			c.getTaskArg(taskPayload),
 			taskPayload.Timeout,
 		)
 	}

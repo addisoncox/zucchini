@@ -2,6 +2,7 @@ package zucchini
 
 import (
 	"context"
+	"encoding/json"
 	"time"
 
 	"github.com/go-redis/redis/v9"
@@ -25,12 +26,12 @@ func (r *RedisClient) Set(key string, value interface{}) {
 	r.Client.Set(ctx, key, value, 0)
 }
 
-func (r *RedisClient) Get(key string) interface{} {
+func (r *RedisClient) Get(key string) string {
 	res, err := r.Client.Do(ctx, "get", key).Result()
 	if err != nil {
 		panic(err.Error())
 	}
-	return res
+	return res.(string)
 }
 
 func (r *RedisClient) LPush(key string, value interface{}) {
@@ -64,4 +65,24 @@ func (r *RedisClient) LLen(key string) uint64 {
 func (r *RedisClient) LRem(key string, count int64, value interface{}) uint64 {
 	removed, _ := r.Client.LRem(ctx, key, count, value).Uint64()
 	return removed
+}
+
+func (r *RedisClient) SetJSON(key string, object interface{}) error {
+	jsonData, err := json.Marshal(object)
+	if err != nil {
+		return err
+	}
+	_, err = r.Client.Do(ctx, "JSON.SET", key, "$", string(jsonData)).Result()
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *RedisClient) GetJSON(key string) (string, error) {
+	res, err := r.Client.Do(ctx, "JSON.GET", key, "$").Result()
+	if err != nil {
+		return "", err
+	}
+	return res.(string), nil
 }
