@@ -13,7 +13,6 @@ type Producer[TaskArgType, TaskResultType any] struct {
 	taskCallback func(TaskStatus, TaskResultType) error
 	taskName     string
 	taskTimeout  time.Duration
-	taskCount    uint64
 }
 
 func NewProducer[TaskArgType, TaskResultType any](
@@ -25,14 +24,25 @@ func NewProducer[TaskArgType, TaskResultType any](
 		taskCallback: taskDefinition.TaskCallback,
 		taskName:     taskDefinition.TaskName,
 		taskTimeout:  taskDefinition.Timeout,
-		taskCount:    0,
 	}
+}
+
+func (p *Producer[TaskArgType, TaskResultType]) commandQueueName() string {
+	return internal.ZUCCHINI_CMD_PREFIX + p.taskName
+}
+
+func (p *Producer[TaskArgType, TaskResultType]) taskQueueName() string {
+	return internal.ZUCCHINI_TASK_PREFIX + p.taskName
+}
+
+func (p *Producer[TaskArgType, TaskResultType]) resultQueueName() string {
+	return internal.ZUCCHINI_RES_PREFIX + p.taskName
 }
 
 func (p *Producer[TaskArgType, TaskResultType]) QueueTask(args TaskArgType) TaskID {
 	taskID := TaskID(uuid.New())
-	taskBytes, err := json.Marshal(
-		internal.TaskPayload{
+	taskPayloadBytes, err := json.Marshal(
+		internal.TaskPayload[TaskArgType]{
 			ID:       uuid.UUID(taskID),
 			Timeout:  p.taskTimeout,
 			Argument: args,
@@ -40,19 +50,17 @@ func (p *Producer[TaskArgType, TaskResultType]) QueueTask(args TaskArgType) Task
 	if err != nil {
 		panic("Could not marshall task data.")
 	}
-	p.redis.LPush(internal.ZUCCHINI_TASK_PREFIX+p.taskName, taskBytes)
-	internal.AtomicInc(&p.taskCount)
+	p.redis.LPush(p.taskQueueName(), taskPayloadBytes)
 	return taskID
 }
 
 func (p *Producer[TaskArgType, TaskResultType]) AwaitCallback() {
 	for {
-		if p.redis.LLen(internal.ZUCCHINI_RES_PREFIX+p.taskName) == 0 {
+		if p.redis.LLen(p.resultQueueName()) == 0 {
 			time.Sleep(time.Second)
 			continue
 		}
-		resultData, _ := p.redis.BRPop(internal.ZUCCHINI_RES_PREFIX + p.taskName)
-		internal.AtomicDec(&p.taskCount)
+		resultData, _ := p.redis.BRPop(p.resultQueueName())
 		if p.taskCallback == nil {
 			return
 		}
@@ -71,5 +79,5 @@ func (p *Producer[TaskArgType, TaskResultType]) CancelTask(taskID TaskID) {
 			Command: "cancel",
 		},
 	)
-	p.redis.LPush(internal.ZUCCHINI_CMD_PREFIX+p.taskName, cmdPayload)
+	p.redis.LPush(p.commandQueueName(), cmdPayload)
 }

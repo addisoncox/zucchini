@@ -27,6 +27,10 @@ func (t TaskStatus) Processing() bool {
 	return t.Status == internal.Processing
 }
 
+func (t TaskStatus) Cancelled() bool {
+	return t.Status == internal.Cancelled
+}
+
 func (t TaskStatus) String() string {
 	switch taskStatus := t.Status; taskStatus {
 	case internal.Failed:
@@ -37,7 +41,10 @@ func (t TaskStatus) String() string {
 		return "queued"
 	case internal.Processing:
 		return "processing"
+	case internal.Cancelled:
+		return "cancelled"
 	}
+
 	return "unknown task status"
 }
 

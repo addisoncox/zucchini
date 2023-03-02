@@ -49,6 +49,6 @@ func main() {
 	taskProducer.CancelTask(taskIDs[1])
 	time.Sleep(time.Second)
 	go taskConsumer.ProcessTasks()
-	go taskConsumer.StartMonitorServer(":8089")
+	go taskConsumer.StartMonitorServer("localhost:8089")
 	taskProducer.AwaitCallback()
 }

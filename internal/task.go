@@ -15,10 +15,10 @@ type TaskCommand struct {
 	Command string
 }
 
-type TaskPayload struct {
+type TaskPayload[T any] struct {
 	ID       uuid.UUID
 	Timeout  time.Duration
-	Argument interface{}
+	Argument T
 }
 
 type TaskStatus uint8
@@ -28,4 +28,11 @@ const (
 	Processing
 	Failed
 	Succeeded
+	Cancelled
 )
+
+type Task[T any] struct {
+	Payload TaskPayload[T]
+	Status  TaskStatus
+	Retries uint
+}

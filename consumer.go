@@ -2,6 +2,7 @@ package zucchini
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"math/rand"
 	"net/http"
@@ -22,14 +23,12 @@ type Consumer[TaskArgType, TaskResultType any] struct {
 	customRetryFunction func(uint) time.Duration
 	maxConcurrency      uint64
 	currentConcurrency  uint64
-	taskRetryCounter    map[TaskID]uint
-	taskTimeouts        map[TaskID]time.Duration
-	taskArgs            map[TaskID]TaskArgType
-	taskStatuses        map[TaskID]internal.TaskStatus
 	cancelQueue         map[TaskID]bool
 	processedQueued     []TaskID
 	pausePollTime       time.Duration
 	queuedTaskIDs       chan TaskID
+	taskIDs             []TaskID
+	monitorAddr         string
 }
 
 type taskData[T any] struct {
@@ -55,15 +54,13 @@ func NewConsumer[TaskArgType, TaskResultType any](
 		customRetryFunction: taskDefinition.CustomRetryFunction,
 		maxConcurrency:      maxConcurrency,
 		currentConcurrency:  0,
-		taskRetryCounter:    make(map[TaskID]uint),
-		taskTimeouts:        make(map[TaskID]time.Duration),
-		taskArgs:            make(map[TaskID]TaskArgType),
-		taskStatuses:        make(map[TaskID]internal.TaskStatus),
 		cancelQueue:         make(map[TaskID]bool),
 		processedQueued:     make([]TaskID, 0),
 		pausePollTime:       time.Second,
 		// TODO: Wrapper for unbounded?
 		queuedTaskIDs: make(chan TaskID, 1000),
+		taskIDs:       make([]TaskID, 0),
+		monitorAddr:   "",
 	}
 }
 
@@ -79,22 +76,28 @@ func (c *Consumer[TaskArgType, TaskResultType]) resultQueueName() string {
 	return internal.ZUCCHINI_RES_PREFIX + c.taskName
 }
 
-func monitor(w http.ResponseWriter, req *http.Request) {
-	http.ServeFile(w, req, "../static/monitor.html")
+func (c *Consumer[TaskArgType, TaskResultType]) monitor(w http.ResponseWriter, req *http.Request) {
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	fmt.Fprint(w, internal.HTMLForZucchiniMonitor(c.taskName, c.monitorAddr))
+	return
 }
 
 func (c *Consumer[TaskArgType, TaskResultType]) pausePoll() {
 	time.Sleep(c.pausePollTime)
 }
 
-func (c *Consumer[TaskArgType, TaskResultType]) saveTask(taskID TaskID, payload string) {
-	c.redis.Set(uuid.UUID(taskID).String(), payload)
+func (c *Consumer[TaskArgType, TaskResultType]) saveTask(taskID TaskID, task internal.Task[TaskArgType]) {
+	taskBytes, _ := json.Marshal(task)
+	c.redis.Set(uuid.UUID(taskID).String(), taskBytes)
+}
+
+func (c *Consumer[TaskArgType, TaskResultType]) queueTask(taskID TaskID) {
 	c.queuedTaskIDs <- taskID
 }
 
-func (c *Consumer[TaskArgType, TaskResultType]) getTask(taskID TaskID) internal.TaskPayload {
+func (c *Consumer[TaskArgType, TaskResultType]) getTask(taskID TaskID) internal.Task[TaskArgType] {
 	res := c.redis.Get(uuid.UUID(taskID).String())
-	return internal.UnmarshalOrPanic[internal.TaskPayload]([]byte(res))
+	return internal.UnmarshalOrPanic[internal.Task[TaskArgType]]([]byte(res))
 }
 
 func (c *Consumer[TaskArgType, TaskResultType]) taskCancelled(taskID TaskID) bool {
@@ -102,29 +105,24 @@ func (c *Consumer[TaskArgType, TaskResultType]) taskCancelled(taskID TaskID) boo
 	return taskCancelled
 }
 
-func (c *Consumer[TaskArgType, TaskResultType]) getTaskArg(taskPayload internal.TaskPayload) TaskArgType {
-	var taskArg TaskArgType
-	serializedArg, _ := json.Marshal(taskPayload.Argument)
-	json.Unmarshal(serializedArg, &taskArg)
-	return taskArg
-}
-
 func (c *Consumer[TaskArgType, TaskResultType]) taskInfo(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	tasksData := make([]taskData[TaskArgType], 0)
-	for id, arg := range c.taskArgs {
+	for _, id := range c.taskIDs {
+		task := c.getTask(id)
 		tasksData = append(tasksData, taskData[TaskArgType]{
 			ID:      uuid.UUID(id).String(),
-			Arg:     arg,
-			Status:  TaskStatus{Status: c.taskStatuses[id]}.String(),
-			Retries: c.taskRetryCounter[id],
+			Arg:     task.Payload.Argument,
+			Status:  TaskStatus{Status: task.Status}.String(),
+			Retries: task.Retries,
 		})
 	}
 	json.NewEncoder(w).Encode(tasksData)
 }
 
 func (c *Consumer[TaskArgType, TaskResultType]) StartMonitorServer(addr string) {
-	http.HandleFunc("/", monitor)
+	c.monitorAddr = addr
+	http.HandleFunc("/", c.monitor)
 	http.HandleFunc("/info", c.taskInfo)
 	http.ListenAndServe(addr, nil)
 }
@@ -143,12 +141,6 @@ func (c *Consumer[TaskArgType, TaskResultType]) handleTimeout(retryCount uint) {
 		time.Sleep(c.customRetryFunction(retryCount))
 	}
 }
-func (c *Consumer[TaskArgType, TaskResultType]) clearTaskData(taskID TaskID) {
-	delete(c.taskRetryCounter, taskID)
-	delete(c.taskArgs, taskID)
-	delete(c.taskTimeouts, taskID)
-	delete(c.taskStatuses, taskID)
-}
 
 func (c *Consumer[TaskArgType, TaskResultType]) processTask(
 	handlerFunc func(TaskArgType) TaskResultType,
@@ -161,6 +153,7 @@ func (c *Consumer[TaskArgType, TaskResultType]) processTask(
 		result <- handlerFunc(arg)
 	}()
 
+	task := c.getTask(taskID)
 	select {
 	case resultValue := <-result:
 		serializedResultValue, _ := json.Marshal(resultValue)
@@ -168,38 +161,31 @@ func (c *Consumer[TaskArgType, TaskResultType]) processTask(
 			Status: TaskStatus{Status: internal.Succeeded},
 			Value:  serializedResultValue,
 		})
-		c.redis.LPush(internal.ZUCCHINI_RES_PREFIX+c.taskName, serializedTaskResult)
-		c.clearTaskData(taskID)
+		c.redis.LPush(c.resultQueueName(), serializedTaskResult)
+		task.Status = internal.Succeeded
+		c.saveTask(taskID, task)
 		internal.AtomicDec(&c.currentConcurrency)
 	case <-time.After(timeout):
-		if c.taskRetryCounter[taskID] > c.maxRetries {
+		if task.Retries > c.maxRetries {
 			taskResult := TaskResult{
 				Status: TaskStatus{Status: internal.Failed},
 				Value:  []byte{},
 			}
-			c.clearTaskData(taskID)
-			c.redis.LPush(internal.ZUCCHINI_RES_PREFIX+c.taskName, taskResult)
+			task.Status = internal.Failed
+			c.saveTask(taskID, task)
+			c.redis.LPush(c.resultQueueName(), taskResult)
 			internal.AtomicDec(&c.currentConcurrency)
 		} else {
-			c.taskRetryCounter[taskID]++
-			c.handleTimeout(c.taskRetryCounter[taskID])
+			task.Retries++
+			c.saveTask(taskID, task)
+			c.handleTimeout(task.Retries)
 			c.processTask(handlerFunc, taskID, arg, timeout)
 		}
 	}
 }
 
-func (c *Consumer[TaskArgType, TaskResultType]) cancelTask(taskID TaskID) error {
-	taskPayloadData, _ := json.Marshal(
-		internal.TaskPayload{
-			ID:       uuid.UUID(taskID),
-			Timeout:  c.taskTimeouts[taskID],
-			Argument: c.taskArgs[taskID],
-		},
-	)
-	if c.redis.LRem(internal.ZUCCHINI_TASK_PREFIX+c.taskName, 1, taskPayloadData) == 0 {
-		c.cancelQueue[taskID] = true
-	}
-	return nil
+func (c *Consumer[TaskArgType, TaskResultType]) cancelTask(taskID TaskID) {
+	c.cancelQueue[taskID] = true
 }
 
 func (c *Consumer[TaskArgType, TaskResultType]) handleCommand(taskID TaskID, command string) {
@@ -232,10 +218,21 @@ func (c *Consumer[TaskArgType, TaskResultType]) queueTasks() {
 			if err != nil {
 				panic(err.Error())
 			}
-			var taskPayload internal.TaskPayload
+			var taskPayload internal.TaskPayload[TaskArgType]
 			json.Unmarshal([]byte(taskData), &taskPayload)
-			c.saveTask(TaskID(taskPayload.ID), taskData)
-			c.taskStatuses[TaskID(taskPayload.ID)] = internal.Queued
+			task := internal.Task[TaskArgType]{
+				Payload: taskPayload,
+				Status:  internal.Queued,
+				Retries: 0,
+			}
+			c.taskIDs = append(c.taskIDs, TaskID(taskPayload.ID))
+			if c.taskCancelled(TaskID(taskPayload.ID)) {
+				task.Status = internal.Cancelled
+				c.saveTask(TaskID(taskPayload.ID), task)
+				continue
+			}
+			c.saveTask(TaskID(taskPayload.ID), task)
+			c.queueTask(TaskID(taskPayload.ID))
 		}
 		c.pausePoll()
 	}
@@ -250,17 +247,20 @@ func (c *Consumer[TaskArgType, TaskResultType]) ProcessTasks() {
 			continue
 		}
 		nextTaskID := <-c.queuedTaskIDs
+		task := c.getTask(nextTaskID)
 		if c.taskCancelled(nextTaskID) {
+			task.Status = internal.Cancelled
+			c.saveTask(nextTaskID, task)
 			continue
 		}
-		taskPayload := c.getTask(nextTaskID)
 		internal.AtomicInc(&c.currentConcurrency)
-		c.taskStatuses[nextTaskID] = internal.Processing
+		task.Status = internal.Processing
+		c.saveTask(nextTaskID, task)
 		go c.processTask(
 			c.taskHandler,
 			nextTaskID,
-			c.getTaskArg(taskPayload),
-			taskPayload.Timeout,
+			task.Payload.Argument,
+			task.Payload.Timeout,
 		)
 	}
 }
