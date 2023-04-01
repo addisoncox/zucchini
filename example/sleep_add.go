@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -23,14 +24,28 @@ func sleepAddCallback(status zucchini.TaskStatus, res int) error {
 	return nil
 }
 
+type MySerializer struct{}
+
+func (m *MySerializer) Serialize(v any) ([]byte, error) {
+	return json.Marshal(v)
+}
+
+func (m *MySerializer) Deserialize(data []byte, v any) error {
+	return json.Unmarshal(data, v)
+}
+
 func main() {
+	mySerializer := &MySerializer{}
 	sleepAddTaskDefinition := zucchini.TaskDefinition[Numbers, int]{
-		TaskHandler:   sleepAdd,
-		TaskCallback:  sleepAddCallback,
-		Timeout:       time.Second * 5,
-		TaskName:      "sleepAdd",
-		MaxRetries:    2,
-		RetryStrategy: zucchini.ExponentialBackoff,
+		TaskHandler:  sleepAdd,
+		TaskCallback: sleepAddCallback,
+		Timeout:      time.Second * 5,
+		TaskName:     "sleepAdd",
+		Options: zucchini.TaskDefinitionOptions{
+			MaxRetries:       2,
+			RetryStrategy:    zucchini.ExponentialBackoff,
+			CustomSerializer: mySerializer,
+		},
 	}
 
 	taskProducer := zucchini.NewProducer(

@@ -13,17 +13,27 @@ type Producer[TaskArgType, TaskResultType any] struct {
 	taskCallback func(TaskStatus, TaskResultType) error
 	taskName     string
 	taskTimeout  time.Duration
+	serializer   serializer
 }
 
 func NewProducer[TaskArgType, TaskResultType any](
 	taskDefinition TaskDefinition[TaskArgType, TaskResultType],
 	redis *RedisClient,
 ) Producer[TaskArgType, TaskResultType] {
+	serializer := serializer{
+		json.Marshal,
+		json.Unmarshal,
+	}
+	if taskDefinition.Options.CustomSerializer != nil {
+		serializer.serialize = taskDefinition.Options.CustomSerializer.Serialize
+		serializer.deserialize = taskDefinition.Options.CustomSerializer.Deserialize
+	}
 	return Producer[TaskArgType, TaskResultType]{
 		redis:        redis,
 		taskCallback: taskDefinition.TaskCallback,
 		taskName:     taskDefinition.TaskName,
 		taskTimeout:  taskDefinition.Timeout,
+		serializer:   serializer,
 	}
 }
 
@@ -41,7 +51,7 @@ func (p *Producer[TaskArgType, TaskResultType]) resultQueueName() string {
 
 func (p *Producer[TaskArgType, TaskResultType]) QueueTask(args TaskArgType) TaskID {
 	taskID := TaskID(uuid.New())
-	taskPayloadBytes, err := json.Marshal(
+	taskPayloadBytes, err := p.serializer.serialize(
 		internal.TaskPayload[TaskArgType]{
 			ID:       uuid.UUID(taskID),
 			Timeout:  p.taskTimeout,
@@ -66,14 +76,14 @@ func (p *Producer[TaskArgType, TaskResultType]) AwaitCallback() {
 		}
 		var result TaskResult
 		var resultValue TaskResultType
-		json.Unmarshal([]byte(resultData), &result)
-		json.Unmarshal(result.Value, &resultValue)
+		p.serializer.deserialize([]byte(resultData), &result)
+		p.serializer.deserialize(result.Value, &resultValue)
 		p.taskCallback(result.Status, resultValue)
 	}
 }
 
 func (p *Producer[TaskArgType, TaskResultType]) CancelTask(taskID TaskID) {
-	cmdPayload, _ := json.Marshal(
+	cmdPayload, _ := p.serializer.serialize(
 		internal.TaskCommand{
 			TaskId:  uuid.UUID(taskID),
 			Command: "cancel",

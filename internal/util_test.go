@@ -1,6 +1,8 @@
 package internal
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestAtomicInc(t *testing.T) {
 	var x uint64

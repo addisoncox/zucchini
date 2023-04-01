@@ -64,13 +64,23 @@ const (
 )
 
 type TaskDefinition[TaskArgType, TaskResultType any] struct {
-	TaskHandler         func(TaskArgType) TaskResultType
-	TaskCallback        func(TaskStatus, TaskResultType) error
-	Timeout             time.Duration
-	TaskName            string
+	TaskHandler  func(TaskArgType) TaskResultType
+	TaskCallback func(TaskStatus, TaskResultType) error
+	Timeout      time.Duration
+	TaskName     string
+	Options      TaskDefinitionOptions
+}
+
+type CustomSerializer interface {
+	Serialize(v any) ([]byte, error)
+	Deserialize(data []byte, v any) error
+}
+
+type TaskDefinitionOptions struct {
 	MaxRetries          uint
 	RetryStrategy       RetryStrategy
 	RetryJitter         time.Duration
 	RetryDelay          time.Duration
 	CustomRetryFunction func(uint) time.Duration
+	CustomSerializer    CustomSerializer
 }

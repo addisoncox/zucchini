@@ -29,6 +29,7 @@ type Consumer[TaskArgType, TaskResultType any] struct {
 	queuedTaskIDs       chan TaskID
 	taskIDs             []TaskID
 	monitorAddr         string
+	serializer          serializer
 }
 
 type taskData[T any] struct {
@@ -38,29 +39,42 @@ type taskData[T any] struct {
 	Retries uint
 }
 
+type serializer struct {
+	serialize   func(v any) ([]byte, error)
+	deserialize func(data []byte, v any) error
+}
+
 func NewConsumer[TaskArgType, TaskResultType any](
 	taskDefinition TaskDefinition[TaskArgType, TaskResultType],
 	redis *RedisClient,
 	maxConcurrency uint64,
 ) Consumer[TaskArgType, TaskResultType] {
+	serializer := serializer{
+		json.Marshal,
+		json.Unmarshal,
+	}
+	if taskDefinition.Options.CustomSerializer != nil {
+		serializer.serialize = taskDefinition.Options.CustomSerializer.Serialize
+		serializer.deserialize = taskDefinition.Options.CustomSerializer.Deserialize
+	}
 	return Consumer[TaskArgType, TaskResultType]{
 		redis:               redis,
 		taskHandler:         taskDefinition.TaskHandler,
 		taskName:            taskDefinition.TaskName,
-		retryStrategy:       taskDefinition.RetryStrategy,
-		maxRetries:          taskDefinition.MaxRetries,
-		retryJitter:         taskDefinition.RetryJitter,
-		retryDelay:          taskDefinition.RetryDelay,
-		customRetryFunction: taskDefinition.CustomRetryFunction,
+		retryStrategy:       taskDefinition.Options.RetryStrategy,
+		maxRetries:          taskDefinition.Options.MaxRetries,
+		retryJitter:         taskDefinition.Options.RetryJitter,
+		retryDelay:          taskDefinition.Options.RetryDelay,
+		customRetryFunction: taskDefinition.Options.CustomRetryFunction,
 		maxConcurrency:      maxConcurrency,
 		currentConcurrency:  0,
 		cancelQueue:         make(map[TaskID]bool),
 		processedQueued:     make([]TaskID, 0),
 		pausePollTime:       time.Second,
-		// TODO: Wrapper for unbounded?
-		queuedTaskIDs: make(chan TaskID, 1000),
-		taskIDs:       make([]TaskID, 0),
-		monitorAddr:   "",
+		queuedTaskIDs:       make(chan TaskID, 1000),
+		taskIDs:             make([]TaskID, 0),
+		monitorAddr:         "",
+		serializer:          serializer,
 	}
 }
 
@@ -87,7 +101,7 @@ func (c *Consumer[TaskArgType, TaskResultType]) pausePoll() {
 }
 
 func (c *Consumer[TaskArgType, TaskResultType]) saveTask(taskID TaskID, task internal.Task[TaskArgType]) {
-	taskBytes, _ := json.Marshal(task)
+	taskBytes, _ := c.serializer.serialize(task)
 	c.redis.Set(uuid.UUID(taskID).String(), taskBytes)
 }
 
@@ -97,7 +111,12 @@ func (c *Consumer[TaskArgType, TaskResultType]) queueTask(taskID TaskID) {
 
 func (c *Consumer[TaskArgType, TaskResultType]) getTask(taskID TaskID) internal.Task[TaskArgType] {
 	res := c.redis.Get(uuid.UUID(taskID).String())
-	return internal.UnmarshalOrPanic[internal.Task[TaskArgType]]([]byte(res))
+	var t internal.Task[TaskArgType]
+	err := c.serializer.deserialize([]byte(res), &t)
+	if err != nil {
+		fmt.Println("Error deserializing task")
+	}
+	return t
 }
 
 func (c *Consumer[TaskArgType, TaskResultType]) taskCancelled(taskID TaskID) bool {
@@ -156,8 +175,8 @@ func (c *Consumer[TaskArgType, TaskResultType]) processTask(
 	task := c.getTask(taskID)
 	select {
 	case resultValue := <-result:
-		serializedResultValue, _ := json.Marshal(resultValue)
-		serializedTaskResult, _ := json.Marshal(TaskResult{
+		serializedResultValue, _ := c.serializer.serialize(resultValue)
+		serializedTaskResult, _ := c.serializer.serialize(TaskResult{
 			Status: TaskStatus{Status: internal.Succeeded},
 			Value:  serializedResultValue,
 		})
@@ -205,7 +224,7 @@ func (c *Consumer[TaskArgType, TaskResultType]) processCommands() {
 			panic(err.Error())
 		}
 		var command internal.TaskCommand
-		json.Unmarshal([]byte(commandData), &command)
+		c.serializer.deserialize([]byte(commandData), &command)
 
 		c.handleCommand(TaskID(command.TaskId), command.Command)
 	}
@@ -219,7 +238,7 @@ func (c *Consumer[TaskArgType, TaskResultType]) queueTasks() {
 				panic(err.Error())
 			}
 			var taskPayload internal.TaskPayload[TaskArgType]
-			json.Unmarshal([]byte(taskData), &taskPayload)
+			c.serializer.deserialize([]byte(taskData), &taskPayload)
 			task := internal.Task[TaskArgType]{
 				Payload: taskPayload,
 				Status:  internal.Queued,
