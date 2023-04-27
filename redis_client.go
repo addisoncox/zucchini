@@ -86,3 +86,11 @@ func (r *RedisClient) GetJSON(key string) (string, error) {
 	}
 	return res.(string), nil
 }
+
+func (r *RedisClient) FlushAll() {
+	r.Client.FlushAll(ctx)
+}
+
+func (r *RedisClient) Shutdown() {
+	r.Client.Shutdown(ctx)
+}

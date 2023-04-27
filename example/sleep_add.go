@@ -2,7 +2,7 @@ package main
 
 import (
 	"encoding/json"
-	"fmt"
+	"errors"
 	"time"
 
 	"github.com/addisoncox/zucchini"
@@ -19,9 +19,12 @@ func sleepAdd(numbers Numbers) int {
 }
 
 func sleepAddCallback(status zucchini.TaskStatus, res int) error {
-	fmt.Println("CALLBACK RUNNING")
-	fmt.Println(res)
-	return nil
+	if status.Succeeded() {
+		return nil
+	} else {
+		return errors.New("...")
+	}
+
 }
 
 type MySerializer struct{}
@@ -35,6 +38,7 @@ func (m *MySerializer) Deserialize(data []byte, v any) error {
 }
 
 func main() {
+
 	mySerializer := &MySerializer{}
 	sleepAddTaskDefinition := zucchini.TaskDefinition[Numbers, int]{
 		TaskHandler:  sleepAdd,
@@ -61,6 +65,7 @@ func main() {
 	for i := 0; i < 20; i++ {
 		taskIDs = append(taskIDs, taskProducer.QueueTask(Numbers{X: 3, Y: 4 + i}))
 	}
+
 	taskProducer.CancelTask(taskIDs[1])
 	time.Sleep(time.Second)
 	go taskConsumer.ProcessTasks()

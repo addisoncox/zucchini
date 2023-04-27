@@ -141,9 +141,10 @@ func (c *Consumer[TaskArgType, TaskResultType]) taskInfo(w http.ResponseWriter, 
 
 func (c *Consumer[TaskArgType, TaskResultType]) StartMonitorServer(addr string) {
 	c.monitorAddr = addr
-	http.HandleFunc("/", c.monitor)
-	http.HandleFunc("/info", c.taskInfo)
-	http.ListenAndServe(addr, nil)
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", c.monitor)
+	mux.HandleFunc("/info", c.taskInfo)
+	go http.ListenAndServe(addr, mux)
 }
 
 func (c *Consumer[TaskArgType, TaskResultType]) handleTimeout(retryCount uint) {
@@ -185,7 +186,7 @@ func (c *Consumer[TaskArgType, TaskResultType]) processTask(
 		c.saveTask(taskID, task)
 		internal.AtomicDec(&c.currentConcurrency)
 	case <-time.After(timeout):
-		if task.Retries > c.maxRetries {
+		if task.Retries >= c.maxRetries {
 			taskResult := TaskResult{
 				Status: TaskStatus{Status: internal.Failed},
 				Value:  []byte{},
